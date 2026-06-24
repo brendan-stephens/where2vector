@@ -27,6 +27,23 @@ On the seeded project (150k rows/table, ~256 MB `shared_buffers`):
 The "disk attribution" panel reports bytes read from disk and TOAST pages read per
 query (the headline, since `track_io_timing` is superuser-only on Supabase and off here).
 
+### Exact KNN — the disk story
+
+The TOASTed leg is ~7× slower and the disk-attribution panel pins the cost on the TOAST
+relation (1.2 GB / 300k pages read per query); the inline leg reads 0 TOAST pages.
+
+![Dashboard in exact-KNN mode](docs/screenshots/dashboard-exact.png)
+
+### HNSW (ANN) — the index story
+
+Switch on HNSW and all three legs drop to tens of ms, and **TOAST reads fall to ~0** —
+the index stores its own vector copies, so the search never de-TOASTs the heap (the cost
+moves to the 794 MB index, visible in the storage table).
+
+![Dashboard in HNSW mode](docs/screenshots/dashboard-hnsw.png)
+
+> Regenerate with `node scripts/screenshots.mjs` while `npm run dev` is running.
+
 ## Architecture
 
 ```
