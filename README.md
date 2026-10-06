@@ -163,10 +163,13 @@ engines allow:
 - **Same queries** — each benchmark iteration drives both 1536 legs with one shared
   query vector.
 
-The one irreducible difference is the access method: the bucket does **approximate
-(ANN)** search; the pgvector legs run **exact** KNN (sequential scan). That's the
-storage/engine tradeoff the demo is about, not a data mismatch. (The 384 leg is a
-different dimension by necessity, so it uses its own queries.)
+The bucket always uses **approximate (ANN)** search. In **KNN mode** the pgvector legs
+run exact sequential scans, so the comparison is ANN vs exact — useful for seeing the
+raw storage cost of de-TOASTing. In **ANN mode** the pgvector legs switch to HNSW too,
+making it **ANN vs ANN across storage engines**: a local HNSW index (vectors cached in
+RAM / on local SSD) vs S3 object storage. Same data, same metric, same access method —
+only the storage engine differs. (The 384 leg is a different dimension by necessity, so
+it uses its own queries.)
 
 ### Re-seed / scale
 

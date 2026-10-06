@@ -1,0 +1,1069 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>where2vector — when does vector search hit disk?</title>
+<meta name="description" content="A visual benchmark comparing pgvector inline, TOASTed, and Supabase Vector Buckets across three query modes: exact KNN, HNSW (ANN), and hybrid vector + full-text search." />
+<style>
+:root {
+  --bg:      #0f1117;
+  --panel:   #181b24;
+  --panel-2: #1f2430;
+  --border:  #2a3040;
+  --text:    #e6e8ee;
+  --muted:   #9aa3b2;
+  --green:   #3ecf8e;
+  --amber:   #f5a623;
+  --red:     #f06a6a;
+  --blue:    #6aa3f0;
+  --purple:  #a57bf5;
+  --teal:    #2dd4bf;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+}
+a { color: var(--green); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── layout ── */
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+section { padding: 80px 0; }
+section + section { border-top: 1px solid var(--border); }
+
+/* ── hero ── */
+.hero {
+  padding: 100px 0 80px;
+  text-align: center;
+}
+.hero-tag {
+  display: inline-block;
+  background: color-mix(in srgb, var(--green) 15%, transparent);
+  color: var(--green);
+  border: 1px solid color-mix(in srgb, var(--green) 30%, transparent);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  padding: 4px 14px;
+  margin-bottom: 24px;
+}
+.hero h1 {
+  font-size: clamp(32px, 6vw, 58px);
+  font-weight: 700;
+  letter-spacing: -.02em;
+  line-height: 1.1;
+  margin-bottom: 20px;
+}
+.hero h1 span { color: var(--green); }
+.hero p {
+  max-width: 560px;
+  margin: 0 auto 36px;
+  color: var(--muted);
+  font-size: 17px;
+}
+.hero-btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 22px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: opacity .15s;
+}
+.btn:hover { opacity: .85; text-decoration: none; }
+.btn-primary { background: var(--green); color: #06281b; }
+.btn-secondary { background: var(--panel); color: var(--text); border: 1px solid var(--border); }
+
+/* ── section headers ── */
+.section-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--green);
+  margin-bottom: 12px;
+}
+.section-title {
+  font-size: clamp(22px, 4vw, 34px);
+  font-weight: 700;
+  letter-spacing: -.01em;
+  margin-bottom: 16px;
+}
+.section-sub {
+  color: var(--muted);
+  font-size: 16px;
+  max-width: 620px;
+  margin-bottom: 48px;
+}
+
+/* ── storage diagram ── */
+.storage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 20px;
+}
+.store-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+  position: relative;
+  overflow: hidden;
+}
+.store-card.highlighted { border-color: var(--green); }
+.store-card-icon { font-size: 28px; margin-bottom: 14px; }
+.store-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+.store-card p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.store-badge {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+.badge-green { background: color-mix(in srgb,var(--green) 15%,transparent); color: var(--green); }
+.badge-red   { background: color-mix(in srgb,var(--red)   15%,transparent); color: var(--red); }
+.badge-blue  { background: color-mix(in srgb,var(--blue)  15%,transparent); color: var(--blue); }
+
+/* ── TOAST animation ── */
+.toast-demo {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 32px;
+  margin-top: 40px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 24px;
+  align-items: center;
+}
+@media (max-width: 640px) {
+  .toast-demo { grid-template-columns: 1fr; }
+  .toast-arrow { transform: rotate(90deg); }
+}
+.toast-col h4 { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
+.heap-row {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.heap-row.active { border-color: var(--green); }
+.heap-row.toasted-active { border-color: var(--amber); }
+.row-id { color: var(--muted); font-size: 11px; min-width: 42px; }
+.row-vec {
+  flex: 1;
+  height: 10px;
+  border-radius: 3px;
+  background: color-mix(in srgb,var(--green) 30%,transparent);
+  position: relative;
+  overflow: hidden;
+}
+.row-vec.big {
+  background: color-mix(in srgb,var(--amber) 20%,transparent);
+}
+.row-vec-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--green);
+  border-radius: 3px;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform .6s ease;
+}
+.row-vec.big .row-vec-fill { background: var(--amber); }
+.heap-row.active .row-vec-fill { transform: scaleX(1); }
+.heap-row.toasted-active .row-vec-fill { transform: scaleX(.18); }
+.toast-ptr {
+  font-size: 11px;
+  color: var(--amber);
+  background: color-mix(in srgb,var(--amber) 12%,transparent);
+  border: 1px solid color-mix(in srgb,var(--amber) 30%,transparent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.toast-arrow { text-align: center; color: var(--muted); font-size: 28px; }
+.toast-chunk {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  transition: border-color .3s, color .3s;
+}
+.toast-chunk.lit { border-color: var(--amber); color: var(--text); }
+.toast-note {
+  margin-top: 16px;
+  padding: 10px 14px;
+  background: color-mix(in srgb,var(--amber) 8%,transparent);
+  border-left: 3px solid var(--amber);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── mode tabs ── */
+.mode-tabs {
+  display: flex;
+  gap: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+  width: fit-content;
+  margin-bottom: 32px;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.mode-tab {
+  padding: 8px 18px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  transition: background .15s, color .15s;
+  white-space: nowrap;
+}
+.mode-tab.active { background: var(--green); color: #06281b; font-weight: 600; }
+.mode-tab:not(.active):hover { color: var(--text); }
+
+.mode-panel { display: none; }
+.mode-panel.active { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: start; }
+@media (max-width: 700px) { .mode-panel.active { grid-template-columns: 1fr; } }
+
+.mode-explain h3 { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+.mode-explain p { color: var(--muted); font-size: 14px; line-height: 1.65; margin-bottom: 12px; }
+.mode-explain .step {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.step-num {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--green);
+  margin-top: 2px;
+}
+.step-body { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.step-body strong { color: var(--text); }
+
+/* ── KNN animation ── */
+.knn-anim {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.knn-anim h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 14px; }
+.scan-row {
+  height: 28px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  gap: 8px;
+  font-size: 12px;
+  transition: border-color .2s, background .2s;
+  position: relative;
+  overflow: hidden;
+}
+.scan-row::after {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 0;
+  background: color-mix(in srgb,var(--amber) 15%,transparent);
+  transition: width .3s;
+}
+.scan-row.scanning { border-color: var(--amber); }
+.scan-row.scanning::after { width: 100%; }
+.scan-row .scan-id { color: var(--muted); font-size: 11px; width: 36px; flex-shrink: 0; z-index: 1; }
+.scan-row .scan-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  z-index: 1;
+}
+.scan-row .toast-tag {
+  font-size: 10px;
+  color: var(--amber);
+  background: color-mix(in srgb,var(--amber) 12%,transparent);
+  padding: 1px 6px;
+  border-radius: 3px;
+  z-index: 1;
+}
+.knn-meter {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.knn-meter-bar {
+  flex: 1;
+  height: 8px;
+  background: var(--panel-2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.knn-meter-fill {
+  height: 100%;
+  background: var(--amber);
+  border-radius: 4px;
+  width: 0;
+  transition: width .4s ease;
+}
+.knn-time { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; min-width: 50px; text-align: right; }
+
+/* ── ANN / HNSW animation ── */
+.hnsw-canvas {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.hnsw-canvas h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 14px; }
+.hnsw-svg-wrap { position: relative; }
+.hnsw-svg-wrap svg { width: 100%; height: auto; }
+.hnsw-stats {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.hnsw-stat {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+}
+.hnsw-stat .val { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.hnsw-stat .lbl { color: var(--muted); margin-top: 2px; }
+
+/* ── hybrid animation ── */
+.hybrid-anim {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.hybrid-anim h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 14px; }
+.hybrid-lanes {
+  display: grid;
+  grid-template-columns: 1fr 24px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.hybrid-lane h5 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 8px; }
+.hybrid-result {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 5px;
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity .3s, transform .3s, border-color .3s;
+}
+.hybrid-result.in { opacity: 1; transform: none; }
+.hybrid-result.both { border-color: var(--teal); }
+.rrank { color: var(--muted); }
+.hybrid-plus { text-align: center; color: var(--muted); font-size: 20px; padding-top: 24px; }
+.rrf-out {
+  margin-top: 14px;
+  background: color-mix(in srgb,var(--teal) 8%,transparent);
+  border: 1px solid color-mix(in srgb,var(--teal) 30%,transparent);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.rrf-out h5 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--teal); margin-bottom: 8px; }
+.rrf-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  opacity: 0;
+  transition: opacity .4s;
+}
+.rrf-row:last-child { border-bottom: none; }
+.rrf-row.in { opacity: 1; }
+.rrf-score { color: var(--teal); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ── bar chart ── */
+.chart-section { }
+.chart-tabs { display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; }
+.chart-tab {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  transition: all .15s;
+}
+.chart-tab.active { background: var(--panel-2); color: var(--text); border-color: var(--text); }
+.chart-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 28px; }
+.chart-row {
+  display: grid;
+  grid-template-columns: 210px 1fr 90px;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 20px;
+}
+@media (max-width: 560px) { .chart-row { grid-template-columns: 1fr; } }
+.chart-label { font-size: 13px; }
+.chart-label small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.bar-track { height: 18px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
+.bar-fill {
+  height: 100%;
+  border-radius: 5px;
+  width: 0;
+  transition: width 1s cubic-bezier(.16,1,.3,1);
+}
+.bar-val { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.chart-note {
+  margin-top: 20px;
+  padding: 12px 16px;
+  background: var(--panel-2);
+  border-left: 3px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ── architecture ── */
+.arch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-top: 32px;
+}
+.arch-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+.arch-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--green); }
+.arch-card p { font-size: 12px; color: var(--muted); line-height: 1.6; }
+code { font-size: .9em; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, "Cascadia Code", monospace; color: var(--text); }
+
+/* ── footer ── */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 48px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+footer a { color: var(--green); }
+
+/* ── scroll reveal ── */
+.reveal { opacity: 0; transform: translateY(20px); transition: opacity .6s ease, transform .6s ease; }
+.reveal.visible { opacity: 1; transform: none; }
+</style>
+</head>
+<body>
+
+<!-- ─── HERO ─── -->
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-tag">Supabase · pgvector · Vector Buckets</div>
+    <h1>When does vector search<br><span>hit disk?</span></h1>
+    <p>A live benchmark comparing query latency across three storage models and three query modes — with the disk reads to prove it.</p>
+    <div class="hero-btns">
+      <a class="btn btn-primary" href="http://localhost:3000" target="_blank">Open dashboard ↗</a>
+      <a class="btn btn-secondary" href="https://github.com/brendan-stephens/where2vector" target="_blank">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        View on GitHub
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ─── STORAGE MODELS ─── -->
+<section>
+  <div class="wrap">
+    <p class="section-label reveal">Storage models</p>
+    <h2 class="section-title reveal">Three ways to store a vector</h2>
+    <p class="section-sub reveal">The vector dimension determines where Postgres stores the data — and that choice drives most of the latency difference you'll see in the benchmark.</p>
+
+    <div class="storage-grid">
+      <div class="store-card highlighted reveal">
+        <div class="store-card-icon">🔵</div>
+        <h3>pgvector · inline (384-dim)</h3>
+        <p><code>vector(384)</code> = 1,544 bytes. Fits inside the 2 KB heap tuple. Read the row, get the vector — no extra fetch.</p>
+        <span class="store-badge badge-green">No TOAST · heap only</span>
+      </div>
+      <div class="store-card reveal">
+        <div class="store-card-icon">🟠</div>
+        <h3>pgvector · TOASTed (1536-dim)</h3>
+        <p><code>vector(1536)</code> = 6,152 bytes. Exceeds Postgres' ~2 KB threshold — spills to a separate TOAST relation. Every distance computation needs an extra disk fetch.</p>
+        <span class="store-badge badge-red">TOAST · extra fetch per row</span>
+      </div>
+      <div class="store-card reveal">
+        <div class="store-card-icon">🪣</div>
+        <h3>Vector Bucket (S3)</h3>
+        <p>Supabase Vector Buckets store 1536-dim vectors in S3-backed object storage with an ANN index. Network latency replaces disk latency — scales to millions.</p>
+        <span class="store-badge badge-blue">S3 · ANN · object storage</span>
+      </div>
+    </div>
+
+    <!-- animated TOAST demo -->
+    <div class="toast-demo reveal">
+      <div class="toast-col">
+        <h4>Heap (docs_384)</h4>
+        <div class="heap-row active" id="hr1">
+          <span class="row-id">row 1</span>
+          <div class="row-vec"><div class="row-vec-fill"></div></div>
+        </div>
+        <div class="heap-row active" id="hr2">
+          <span class="row-id">row 2</span>
+          <div class="row-vec"><div class="row-vec-fill"></div></div>
+        </div>
+        <div class="heap-row active" id="hr3">
+          <span class="row-id">row 3</span>
+          <div class="row-vec"><div class="row-vec-fill"></div></div>
+        </div>
+        <div class="toast-note">✓ vector stored inline — one read</div>
+      </div>
+      <div class="toast-arrow">↔</div>
+      <div class="toast-col">
+        <h4>Heap + TOAST (docs_1536)</h4>
+        <div class="heap-row toasted-active" id="th1">
+          <span class="row-id">row 1</span>
+          <div class="row-vec big"><div class="row-vec-fill"></div></div>
+          <span class="toast-ptr">→ TOAST</span>
+        </div>
+        <div class="heap-row toasted-active" id="th2">
+          <span class="row-id">row 2</span>
+          <div class="row-vec big"><div class="row-vec-fill"></div></div>
+          <span class="toast-ptr">→ TOAST</span>
+        </div>
+        <div class="heap-row toasted-active" id="th3">
+          <span class="row-id">row 3</span>
+          <div class="row-vec big"><div class="row-vec-fill"></div></div>
+          <span class="toast-ptr">→ TOAST</span>
+        </div>
+        <div class="toast-chunks" style="margin-top:10px">
+          <div class="toast-chunk" id="tc1">TOAST chunk · row 1 · 1536-dim vector</div>
+          <div class="toast-chunk" id="tc2">TOAST chunk · row 2 · 1536-dim vector</div>
+          <div class="toast-chunk" id="tc3">TOAST chunk · row 3 · 1536-dim vector</div>
+        </div>
+        <div class="toast-note" style="border-color:var(--amber);background:color-mix(in srgb,var(--amber) 8%,transparent)">⚠ extra disk read per row · 1.2 GB per scan</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── QUERY MODES ─── -->
+<section>
+  <div class="wrap">
+    <p class="section-label reveal">Query modes</p>
+    <h2 class="section-title reveal">Three ways to search</h2>
+    <p class="section-sub reveal">The search type determines how much work Postgres does per query — and whether you ever touch the TOAST relation at all.</p>
+
+    <div class="mode-tabs reveal">
+      <button class="mode-tab active" onclick="switchMode('knn',this)">KNN — exact</button>
+      <button class="mode-tab" onclick="switchMode('ann',this)">ANN — HNSW</button>
+      <button class="mode-tab" onclick="switchMode('hybrid',this)">Hybrid — vector + FTS</button>
+    </div>
+
+    <!-- KNN -->
+    <div class="mode-panel active" id="mode-knn">
+      <div class="mode-explain">
+        <h3>Exact KNN (sequential scan)</h3>
+        <p>Every row is fetched and its distance to the query vector computed. No index skips any work.</p>
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body"><strong>Scan all 150,000 rows</strong> — the planner reads the entire table in sequence.</div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body"><strong>De-TOAST each 1536-dim vector</strong> — for the TOASTed leg, each row pointer must be followed to the TOAST relation. ~1.2 GB of reads per query.</div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body"><strong>Compute L2 distance</strong> for every row, keep the top-k.</div>
+        </div>
+        <p style="margin-top:8px"><strong>Look for:</strong> the TOASTed 1536-dim leg is ~7× slower than the inline 384-dim leg. The disk attribution panel shows 100% of reads come from the TOAST relation.</p>
+      </div>
+      <div class="knn-anim reveal" id="knn-anim">
+        <h4>Sequential scan · TOASTed leg</h4>
+        <div id="scan-rows"></div>
+        <div class="knn-meter">
+          <span>Disk reads</span>
+          <div class="knn-meter-bar"><div class="knn-meter-fill" id="knn-fill"></div></div>
+          <span class="knn-time" id="knn-time">0 MB</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANN -->
+    <div class="mode-panel" id="mode-ann">
+      <div class="mode-explain">
+        <h3>Approximate KNN via HNSW</h3>
+        <p>The HNSW index stores its own copy of every vector. The search walks the index graph and never touches the TOAST relation.</p>
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body"><strong>Enter the HNSW graph</strong> at the top layer — a sparse set of long-range connections.</div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body"><strong>Greedy descent</strong> through layers, following edges to closer neighbors at each level.</div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body"><strong>TOAST reads → 0.</strong> The index already has the vectors — the heap is never de-TOASTed during search.</div>
+        </div>
+        <p style="margin-top:8px"><strong>Look for:</strong> inline and TOASTed legs nearly match (~100 ms vs ~9 s with KNN). The gap doesn't disappear — the 1536-dim HNSW index is ~800 MB, more pages to walk than the 384-dim one.</p>
+      </div>
+      <div class="hnsw-canvas reveal" id="hnsw-anim">
+        <h4>HNSW graph traversal</h4>
+        <div class="hnsw-svg-wrap">
+          <svg viewBox="0 0 340 200" id="hnsw-svg" xmlns="http://www.w3.org/2000/svg">
+            <!-- edges drawn by JS -->
+            <g id="hnsw-edges"></g>
+            <!-- nodes drawn by JS -->
+            <g id="hnsw-nodes"></g>
+          </svg>
+        </div>
+        <div class="hnsw-stats">
+          <div class="hnsw-stat">
+            <div class="val" id="hnsw-nodes-visited">0</div>
+            <div class="lbl">nodes visited</div>
+          </div>
+          <div class="hnsw-stat">
+            <div class="val" id="hnsw-toast-reads">0</div>
+            <div class="lbl">TOAST reads</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HYBRID -->
+    <div class="mode-panel" id="mode-hybrid">
+      <div class="mode-explain">
+        <h3>Hybrid: vector + full-text (RRF)</h3>
+        <p>Two indexes run in parallel and their ranked results are fused with <strong>Reciprocal Rank Fusion</strong>.</p>
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body"><strong>HNSW vector search</strong> — top-k×10 candidates by L2 distance, ranked 1…N.</div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body"><strong>GIN full-text search</strong> — top-k×10 candidates matching the keyword query, ranked 1…N by <code>ts_rank</code>.</div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body"><strong>RRF fusion</strong> — <code>score = 1/(60+rank_vec) + 1/(60+rank_fts)</code>. Documents appearing in both lists score from both terms. Top-k by combined score returned.</div>
+        </div>
+        <p style="margin-top:8px"><strong>Two architectures:</strong> the inline hybrid does this in a single SQL CTE (one round-trip). The bucket hybrid fans out to S3 ANN + Postgres GIN in parallel and fuses in TypeScript (two round-trips).</p>
+      </div>
+      <div class="hybrid-anim reveal" id="hybrid-anim">
+        <h4>RRF fusion</h4>
+        <div class="hybrid-lanes">
+          <div class="hybrid-lane">
+            <h5 style="color:var(--purple)">Vector (HNSW)</h5>
+            <div class="hybrid-result" id="v1"><span>doc 4021</span><span class="rrank">rank 1</span></div>
+            <div class="hybrid-result" id="v2"><span>doc 892</span><span class="rrank">rank 2</span></div>
+            <div class="hybrid-result" id="v3"><span>doc 7714</span><span class="rrank">rank 3</span></div>
+            <div class="hybrid-result" id="v4"><span>doc 2203</span><span class="rrank">rank 4</span></div>
+          </div>
+          <div class="hybrid-plus">+</div>
+          <div class="hybrid-lane">
+            <h5 style="color:var(--green)">Full-text (GIN)</h5>
+            <div class="hybrid-result" id="f1"><span>doc 892</span><span class="rrank">rank 1</span></div>
+            <div class="hybrid-result" id="f2"><span>doc 5510</span><span class="rrank">rank 2</span></div>
+            <div class="hybrid-result" id="f3"><span>doc 4021</span><span class="rrank">rank 3</span></div>
+            <div class="hybrid-result" id="f4"><span>doc 1190</span><span class="rrank">rank 4</span></div>
+          </div>
+        </div>
+        <div class="rrf-out">
+          <h5>→ RRF combined ranking</h5>
+          <div class="rrf-row" id="r1">
+            <span>doc 892 <small style="color:var(--muted)">(vec 2 + fts 1)</small></span>
+            <span class="rrf-score">0.0311</span>
+          </div>
+          <div class="rrf-row" id="r2">
+            <span>doc 4021 <small style="color:var(--muted)">(vec 1 + fts 3)</small></span>
+            <span class="rrf-score">0.0307</span>
+          </div>
+          <div class="rrf-row" id="r3">
+            <span>doc 5510 <small style="color:var(--muted)">(fts 2 only)</small></span>
+            <span class="rrf-score">0.0161</span>
+          </div>
+          <div class="rrf-row" id="r4">
+            <span>doc 7714 <small style="color:var(--muted)">(vec 3 only)</small></span>
+            <span class="rrf-score">0.0159</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── BENCHMARK CHART ─── -->
+<section class="chart-section">
+  <div class="wrap">
+    <p class="section-label reveal">Benchmark results</p>
+    <h2 class="section-title reveal">Typical latencies (p50)</h2>
+    <p class="section-sub reveal">150k rows · 3 queries · top-10 · Supabase us-east-1. Switch modes to see how the balance shifts.</p>
+
+    <div class="chart-tabs reveal">
+      <button class="chart-tab active" onclick="switchChart('knn',this)">KNN — exact</button>
+      <button class="chart-tab" onclick="switchChart('ann',this)">ANN — HNSW</button>
+      <button class="chart-tab" onclick="switchChart('hybrid',this)">Hybrid</button>
+    </div>
+
+    <div class="chart-wrap reveal">
+      <div id="chart-bars"></div>
+      <p class="chart-note" id="chart-note"></p>
+    </div>
+  </div>
+</section>
+
+<!-- ─── ARCHITECTURE ─── -->
+<section>
+  <div class="wrap">
+    <p class="section-label reveal">How it's built</p>
+    <h2 class="section-title reveal">Architecture</h2>
+    <p class="section-sub reveal">A Next.js 14 App Router app. The dashboard talks to Postgres only through supabase-js SECURITY DEFINER RPCs — anon key only, no server secret needed for the pgvector legs.</p>
+    <div class="arch-grid">
+      <div class="arch-card reveal">
+        <h4>Migrations</h4>
+        <p>
+          <code>0001</code> extensions ·
+          <code>0002</code> tables ·
+          <code>0003</code> RPCs ·
+          <code>0004</code> seed helpers ·
+          <code>0005</code> statio ·
+          <code>0006</code> demo access ·
+          <code>0010</code> hybrid FTS ·
+          <code>0011</code> bucket hybrid
+        </p>
+      </div>
+      <div class="arch-card reveal">
+        <h4>Key RPCs</h4>
+        <p>
+          <code>bench_knn</code> exact / HNSW ·
+          <code>bench_hybrid_knn</code> HNSW + GIN + RRF CTE ·
+          <code>bench_fts_1536</code> GIN leg for bucket hybrid ·
+          <code>bench_explain_knn</code> buffer attribution
+        </p>
+      </div>
+      <div class="arch-card reveal">
+        <h4>Bucket hybrid</h4>
+        <p>S3 ANN (<code>queryBucket</code>) + Postgres GIN (<code>bench_fts_1536</code>) fire in parallel via <code>Promise.all</code>. RRF fusion runs in TypeScript — the "distributed hybrid" pattern.</p>
+      </div>
+      <div class="arch-card reveal">
+        <h4>Seeding</h4>
+        <p><code>bench_seed(dim, n)</code> inserts rows server-side with random vectors and vocabulary payloads so FTS finds real matches. Both tables: 150k rows. Bucket: 150k mirrored vectors.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── FOOTER ─── -->
+<footer>
+  <div class="wrap">
+    <p>Built with <a href="https://supabase.com">Supabase</a> · <a href="https://github.com/pgvector/pgvector">pgvector</a> · Next.js</p>
+    <p style="margin-top:8px"><a href="https://github.com/brendan-stephens/where2vector">github.com/brendan-stephens/where2vector</a></p>
+  </div>
+</footer>
+
+<script>
+// ── scroll reveal ──────────────────────────────────────────────
+const observer = new IntersectionObserver(
+  (entries) => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); } }),
+  { threshold: 0.1 }
+);
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+// ── TOAST chunks animation ─────────────────────────────────────
+function animateToast() {
+  const chunks = [document.getElementById('tc1'), document.getElementById('tc2'), document.getElementById('tc3')];
+  let i = 0;
+  chunks.forEach(c => c.classList.remove('lit'));
+  function next() {
+    if (i > 0) chunks[i-1].classList.remove('lit');
+    if (i < chunks.length) { chunks[i].classList.add('lit'); i++; setTimeout(next, 700); }
+    else { setTimeout(animateToast, 1200); }
+  }
+  next();
+}
+animateToast();
+
+// ── mode switching ─────────────────────────────────────────────
+function switchMode(id, btn) {
+  document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.mode-panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('mode-' + id).classList.add('active');
+  if (id === 'knn') startKnnAnim();
+  if (id === 'ann') startHnswAnim();
+  if (id === 'hybrid') startHybridAnim();
+}
+
+// ── KNN animation ──────────────────────────────────────────────
+const SCAN_COUNT = 8;
+let knnTimer = null;
+function buildKnnRows() {
+  const container = document.getElementById('scan-rows');
+  container.innerHTML = '';
+  for (let i = 0; i < SCAN_COUNT; i++) {
+    const row = document.createElement('div');
+    row.className = 'scan-row';
+    row.innerHTML = `<span class="scan-id">row ${(i+1)*18732}</span><div class="scan-bar"></div><span class="toast-tag">TOAST</span>`;
+    container.appendChild(row);
+  }
+}
+buildKnnRows();
+
+function startKnnAnim() {
+  if (knnTimer) clearTimeout(knnTimer);
+  const rows = document.querySelectorAll('#scan-rows .scan-row');
+  const fill = document.getElementById('knn-fill');
+  const time = document.getElementById('knn-time');
+  let idx = 0, mb = 0;
+  rows.forEach(r => r.classList.remove('scanning'));
+  fill.style.width = '0';
+  time.textContent = '0 MB';
+  function tick() {
+    if (idx > 0) rows[idx-1].classList.remove('scanning');
+    if (idx < rows.length) {
+      rows[idx].classList.add('scanning');
+      mb += 155;
+      const pct = Math.min(100, (mb / 1240) * 100);
+      fill.style.width = pct + '%';
+      time.textContent = mb + ' MB';
+      idx++;
+      knnTimer = setTimeout(tick, 450);
+    } else {
+      knnTimer = setTimeout(startKnnAnim, 1200);
+    }
+  }
+  tick();
+}
+startKnnAnim();
+
+// ── HNSW animation ─────────────────────────────────────────────
+const NODES = [
+  {x:170, y:30, layer:2}, // top-layer entry
+  {x:80,  y:80, layer:1},
+  {x:260, y:75, layer:1},
+  {x:40,  y:145, layer:0},
+  {x:130, y:150, layer:0},
+  {x:200, y:155, layer:0},
+  {x:300, y:140, layer:0},
+  {x:85,  y:175, layer:0},
+  {x:250, y:180, layer:0, target:true},
+];
+const EDGES = [
+  [0,1],[0,2],        // layer 2→1
+  [1,3],[1,4],[2,5],[2,6], // layer 1→0
+  [3,7],[4,5],[5,8],[6,8], // layer 0
+  [7,4],[4,8],
+];
+// traversal path: node indices visited in order
+const TRAVERSAL = [0, 2, 6, 5, 8];
+
+function buildHnsw() {
+  const edgesG = document.getElementById('hnsw-edges');
+  const nodesG = document.getElementById('hnsw-nodes');
+  edgesG.innerHTML = '';
+  nodesG.innerHTML = '';
+  EDGES.forEach(([a,b]) => {
+    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1', NODES[a].x); line.setAttribute('y1', NODES[a].y);
+    line.setAttribute('x2', NODES[b].x); line.setAttribute('y2', NODES[b].y);
+    line.setAttribute('stroke', '#2a3040'); line.setAttribute('stroke-width', '1.5');
+    edgesG.appendChild(line);
+  });
+  NODES.forEach((n, i) => {
+    const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+    const circle = document.createElementNS('http://www.w3.org/2000/svg','circle');
+    circle.setAttribute('cx', n.x); circle.setAttribute('cy', n.y);
+    circle.setAttribute('r', n.target ? 10 : 7);
+    circle.setAttribute('fill', n.target ? '#2dd4bf22' : '#1f2430');
+    circle.setAttribute('stroke', n.target ? '#2dd4bf' : '#2a3040');
+    circle.setAttribute('stroke-width', '1.5');
+    circle.setAttribute('id', 'hn-' + i);
+    g.appendChild(circle);
+    nodesG.appendChild(g);
+  });
+}
+buildHnsw();
+
+let hnswTimer = null;
+function startHnswAnim() {
+  if (hnswTimer) clearTimeout(hnswTimer);
+  // reset all nodes
+  NODES.forEach((_, i) => {
+    const c = document.getElementById('hn-' + i);
+    if (c) {
+      c.setAttribute('fill', NODES[i].target ? '#2dd4bf22' : '#1f2430');
+      c.setAttribute('stroke', NODES[i].target ? '#2dd4bf' : '#2a3040');
+    }
+  });
+  document.getElementById('hnsw-nodes-visited').textContent = '0';
+  document.getElementById('hnsw-toast-reads').textContent = '0';
+  let step = 0;
+  function tick() {
+    if (step < TRAVERSAL.length) {
+      const ni = TRAVERSAL[step];
+      const c = document.getElementById('hn-' + ni);
+      if (c) {
+        c.setAttribute('fill', NODES[ni].target ? '#2dd4bf88' : '#3ecf8e44');
+        c.setAttribute('stroke', NODES[ni].target ? '#2dd4bf' : '#3ecf8e');
+        c.setAttribute('stroke-width', '2.5');
+      }
+      document.getElementById('hnsw-nodes-visited').textContent = step + 1;
+      step++;
+      hnswTimer = setTimeout(tick, 500);
+    } else {
+      hnswTimer = setTimeout(startHnswAnim, 2000);
+    }
+  }
+  tick();
+}
+startHnswAnim();
+
+// ── Hybrid animation ───────────────────────────────────────────
+let hybridTimer = null;
+function startHybridAnim() {
+  if (hybridTimer) clearTimeout(hybridTimer);
+  const els = ['v1','v2','v3','v4','f1','f2','f3','f4','r1','r2','r3','r4'];
+  els.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.classList.remove('in','both'); }
+  });
+  const seq = [
+    // vec results appear
+    {ids:['v1','v2','v3','v4'], delay:0},
+    // fts results appear
+    {ids:['f1','f2','f3','f4'], delay:600},
+    // highlight docs that appear in both (892 = v2+f1, 4021 = v1+f3)
+    {ids:['v2','f1','v1','f3'], cls:'both', delay:1200},
+    // rrf output appears
+    {ids:['r1','r2','r3','r4'], delay:1800},
+  ];
+  seq.forEach(({ids, cls, delay}) => {
+    hybridTimer = setTimeout(() => {
+      ids.forEach((id, i) => {
+        setTimeout(() => {
+          const el = document.getElementById(id);
+          if (el) { el.classList.add('in'); if (cls) el.classList.add(cls); }
+        }, i * 80);
+      });
+    }, delay);
+  });
+  hybridTimer = setTimeout(startHybridAnim, 5000);
+}
+startHybridAnim();
+
+// ── benchmark chart data ───────────────────────────────────────
+const CHART_DATA = {
+  knn: {
+    rows: [
+      { label: 'pgvector · inline (384)', sub: 'heap only · no TOAST', ms: 1400, max: 9500, color: 'var(--green)' },
+      { label: 'pgvector · TOASTed (1536)', sub: '~1.2 GB TOAST reads per query', ms: 9500, max: 9500, color: 'var(--red)' },
+      { label: 'Vector Bucket (S3)', sub: 'ANN · object storage latency', ms: 600, max: 9500, color: 'var(--blue)' },
+    ],
+    note: 'Exact KNN: every row fetched, every 1536-dim vector de-TOASTed. The 7× gap between inline and TOASTed is pure storage cost — same query, same data, different where the bytes live.',
+  },
+  ann: {
+    rows: [
+      { label: 'pgvector · inline (384)', sub: 'HNSW · no TOAST reads', ms: 100, max: 600, color: 'var(--green)' },
+      { label: 'pgvector · TOASTed (1536)', sub: 'HNSW · TOAST reads ≈ 0', ms: 115, max: 600, color: 'var(--red)' },
+      { label: 'Vector Bucket (S3)', sub: 'ANN · two network hops', ms: 580, max: 600, color: 'var(--blue)' },
+    ],
+    note: 'ANN mode (HNSW): TOAST reads drop to ≈ 0 — the index stores its own vector copies. Inline and TOASTed nearly match. The bucket is now ANN vs ANN, same metric — only the storage engine differs.',
+  },
+  hybrid: {
+    rows: [
+      { label: 'Inline ANN (baseline)', sub: 'HNSW only · no FTS overhead', ms: 110, max: 1800, color: 'var(--green)' },
+      { label: 'Inline hybrid', sub: 'HNSW + GIN + RRF · single SQL query', ms: 250, max: 1800, color: 'var(--purple)' },
+      { label: 'Bucket hybrid', sub: 'S3 ANN + GIN + RRF · two network round-trips', ms: 820, max: 1800, color: 'var(--teal)' },
+    ],
+    note: 'Hybrid mode: all three bars use ANN. The inline→hybrid gap (~140 ms) is the GIN scan + RRF overhead inside Postgres. The extra cost of the distributed bucket hybrid is the second network round-trip.',
+  },
+};
+
+function renderChart(key) {
+  const data = CHART_DATA[key];
+  const container = document.getElementById('chart-bars');
+  const note = document.getElementById('chart-note');
+  note.textContent = data.note;
+  container.innerHTML = data.rows.map(r => `
+    <div class="chart-row">
+      <div class="chart-label">${r.label}<small>${r.sub}</small></div>
+      <div class="bar-track"><div class="bar-fill" style="background:${r.color}" data-pct="${Math.round((r.ms/r.max)*100)}"></div></div>
+      <div class="bar-val">${r.ms >= 1000 ? (r.ms/1000).toFixed(1)+' s' : r.ms+' ms'} p50</div>
+    </div>
+  `).join('');
+  // animate bars in next frame
+  requestAnimationFrame(() => {
+    container.querySelectorAll('.bar-fill').forEach(el => {
+      el.style.width = el.dataset.pct + '%';
+    });
+  });
+}
+renderChart('knn');
+
+function switchChart(key, btn) {
+  document.querySelectorAll('.chart-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  // reset bars first
+  document.querySelectorAll('.bar-fill').forEach(el => el.style.width = '0');
+  setTimeout(() => renderChart(key), 50);
+}
+</script>
+</body>
+</html>
