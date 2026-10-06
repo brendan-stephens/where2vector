@@ -660,9 +660,9 @@ footer a { color: var(--green); }
         </div>
         <div class="step">
           <div class="step-num">3</div>
-          <div class="step-body"><strong>TOAST reads → 0.</strong> The index already has the vectors — the heap is never de-TOASTed during search.</div>
+          <div class="step-body"><strong>TOAST reads → 0.</strong> The index stores its own vector copies — the heap's TOAST relation is never read during search. The disk cost doesn't vanish though: it moves from ~1.2 GB of TOAST pages to the ~800 MB index relation. The difference is the index walk reads only the pages it needs, not all 150k.</div>
         </div>
-        <p style="margin-top:8px"><strong>Look for:</strong> inline and TOASTed legs nearly match (~100 ms vs ~9 s with KNN). The gap doesn't disappear — the 1536-dim HNSW index is ~800 MB, more pages to walk than the 384-dim one.</p>
+        <p style="margin-top:8px"><strong>Look for:</strong> inline and TOASTed legs nearly match (~100 ms vs ~9 s with KNN). The gap narrows but doesn't vanish — the 1536-dim HNSW index is ~800 MB vs ~170 MB for 384-dim, so the graph walk reads more index pages. The disk cost moved from the TOAST relation to the index relation; it didn't disappear.</p>
       </div>
       <div class="hnsw-canvas reveal" id="hnsw-anim">
         <h4>HNSW graph traversal</h4>
