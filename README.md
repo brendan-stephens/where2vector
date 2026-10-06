@@ -1,14 +1,16 @@
 # where2vector
 
 A benchmark demo that makes **disk latency visible** for vector search. It compares
-query latency across three storage strategies so you can see *when and why* a vector
-query hits disk:
+query latency across three storage strategies and two query modes so you can see *when
+and why* a vector query hits disk — and what happens when you add full-text search:
 
 | Leg | What it is | Storage | Expected |
 |---|---|---|---|
 | **pgvector · inline (no TOAST)** | `vector(384)` = 1544 B | lives in the heap tuple | fast — no extra fetch |
 | **pgvector · TOASTed** | `vector(1536)` = 6152 B | spills to the out-of-line **TOAST** relation | slow — extra disk fetch per row |
 | **Vector Bucket (S3)** | Supabase Vector Buckets (alpha) | S3-backed object store | network/object-storage latency, scales to millions |
+| **Inline hybrid** | HNSW + GIN fused with RRF inside Postgres | heap (vectors) + GIN (tsvector) | single-query database fusion |
+| **Bucket hybrid** | S3 ANN + Postgres GIN fused in application code | S3 (vectors) + GIN (tsvector) | two parallel network round-trips |
 
 The knob between the two pgvector legs is **vector dimension**: 384-dim vectors stay
 inline; 1536-dim vectors exceed Postgres' ~2 KB tuple threshold and get pushed to a
@@ -42,13 +44,32 @@ moves to the 794 MB index, visible in the storage table).
 
 ![Dashboard in HNSW mode](docs/screenshots/dashboard-hnsw.png)
 
-> Regenerate with `node scripts/screenshots.mjs` while `npm run dev` is running.
+### Hybrid — the fusion story
+
+Select **Hybrid** to compare two architectural patterns for combining vector search with
+full-text search:
+
+- **Inline ANN (baseline)** — HNSW-only on the inline 384-dim table, no FTS. The
+  starting point.
+- **Inline hybrid** — a single Postgres query runs HNSW + GIN in parallel as a CTE
+  chain and fuses with Reciprocal Rank Fusion (`score = 1/(60+rank_vec) + 1/(60+rank_fts)`).
+  The database does everything; one round-trip.
+- **Bucket hybrid** — S3 ANN and Postgres GIN fire as two parallel `Promise.all` network
+  calls; RRF fusion runs in TypeScript. Same result quality, two network round-trips
+  instead of one SQL query.
+
+The inline→hybrid gap shows the GIN scan + RRF overhead inside Postgres. The
+inline hybrid→bucket hybrid gap shows what the distributed pattern adds.
+
+> Regenerate screenshots with `node scripts/screenshots.mjs` while `npm run dev` is running.
 
 ## Architecture
 
 ```
 supabase/migrations/   0001 extensions · 0002 tables · 0003 query RPCs ·
-                       0004 seed helpers · 0005 statio · 0006 demo access
+                       0004 seed helpers · 0005 statio · 0006 demo access ·
+                       0010 hybrid (FTS + bench_hybrid_knn) ·
+                       0011 hybrid bucket (bench_fts_1536)
 lib/                   bench.ts (types/percentiles/EXPLAIN parse) · supabase.ts · buckets.ts
 app/                   api/benchmark · api/stats · page.tsx (dashboard) · globals.css
 scripts/seed.ts        server-side pgvector seeding + bucket upsert
@@ -56,10 +77,11 @@ scripts/seed.ts        server-side pgvector seeding + bucket upsert
 
 The dashboard talks to Postgres only through supabase-js. The pgvector legs call
 SECURITY DEFINER RPCs (`bench_knn`, `bench_explain_knn`, `bench_statio`, …) that read
-a private `bench` schema. Query mode defaults to **exact KNN (sequential scan)** so
-every row's vector is de-TOASTed — the honest way to expose TOAST disk cost. The
-optional **HNSW** toggle runs production-realistic ANN instead (Index Scan, ~120 ms
-on the 1536 leg vs ~9.5 s exact); it requires the indexes to be pre-built (below).
+a private `bench` schema. The **search type** selector has three modes:
+
+- **KNN — exact**: sequential scan, every row de-TOASTed — the honest way to expose TOAST disk cost.
+- **ANN — HNSW**: Index Scan (~120 ms on the 1536 leg vs ~9.5 s exact); requires the indexes to be pre-built (below).
+- **Hybrid — vector + FTS**: always ANN. `bench_hybrid_knn` runs HNSW + GIN in one CTE; `bench_fts_1536` is the GIN leg for the bucket hybrid, with RRF fusion in TypeScript.
 
 The **Concurrency** control runs each leg's queries through a bounded pool (1–32 in
 flight) and reports **queries/sec** per leg — how each engine handles parallel load.
@@ -103,23 +125,32 @@ npm run seed         # creates bucket "embeddings" + euclidean index "docs-1536"
 
 Then re-run the dashboard — the bucket leg lights up.
 
-### Pre-build the HNSW indexes (for the ANN toggle)
+### Pre-build the HNSW indexes (for ANN and Hybrid modes)
 
 The indexes are already built on this project. HNSW indexes are **not** built from
 the request path — building one over the 150k×1536 TOASTed table takes minutes and
 would exceed the anon `statement_timeout` (that's the "TOAST times out when I select
 HNSW" symptom). If you ever need to rebuild (e.g. after `RESET`), run it out-of-band
-with extra build memory:
+with no statement timeout:
 
 ```sql
-set maintenance_work_mem = '256MB';
-set statement_timeout = '600s';
+-- via supabase CLI:  echo "<sql>" | supabase db query --linked --file /dev/stdin
+set statement_timeout = 0;
 create index if not exists docs_384_hnsw  on bench.docs_384  using hnsw (embedding extensions.vector_l2_ops);
-create index if not exists docs_1536_hnsw on bench.docs_1536 using hnsw (embedding extensions.vector_l2_ops) with (m = 8, ef_construction = 32);
+create index if not exists docs_1536_hnsw on bench.docs_1536 using hnsw (embedding extensions.vector_l2_ops);
 ```
 
 The dashboard checks `bench_index_exists(dim)` before the HNSW leg and reports a clear
 message if an index is missing — it never blocks on a build.
+
+The **GIN indexes** (`docs_384_fts_gin`, `docs_1536_fts_gin`) power the hybrid FTS legs.
+They are faster to build (seconds, not minutes) and are created by migrations 0010/0011.
+If you truncate and re-seed, rebuild them before running hybrid mode:
+
+```sql
+create index if not exists docs_384_fts_gin  on bench.docs_384  using gin(fts);
+create index if not exists docs_1536_fts_gin on bench.docs_1536 using gin(fts);
+```
 
 ### Apples-to-apples
 
