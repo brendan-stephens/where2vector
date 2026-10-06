@@ -10,6 +10,8 @@
   --amber: #f5a623;
   --red: #f06a6a;
   --blue: #6aa3f0;
+  --purple: #a57bf5;
+  --teal: #2dd4bf;
 }
 
 * { box-sizing: border-box; }
@@ -42,7 +44,63 @@ h2 { font-size: 15px; margin: 0 0 12px; color: var(--text); }
 
 .controls { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-end; }
 .field { display: flex; flex-direction: column; gap: 6px; }
+.field-full { flex: 1 1 100%; }
 .field label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* segmented search-type control */
+.seg { display: flex; }
+.seg-btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  margin-right: -1px;
+  position: relative;
+}
+.seg-btn:first-child { border-radius: 8px 0 0 8px; }
+.seg-btn:last-child { border-radius: 0 8px 8px 0; margin-right: 0; }
+.seg-btn:hover { color: var(--text); }
+.seg-btn.active { background: var(--green); color: #06281b; font-weight: 600; border-color: var(--green); z-index: 1; }
+
+/* field descriptions: hidden by default, revealed on hover/focus */
+.field-desc {
+  color: var(--muted);
+  font-size: 11px;
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  transition: opacity 0.15s, max-height 0.15s;
+  display: block;
+}
+.field:hover .field-desc,
+.field:focus-within .field-desc { opacity: 1; max-height: 3em; }
+
+/* TLDR box — search type explanation */
+.tldr { margin: 4px 0 8px; }
+.tldr-box {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tldr-row { display: flex; gap: 12px; align-items: baseline; }
+.tldr-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  min-width: 56px;
+  flex-shrink: 0;
+}
+.tldr-text { color: var(--text); font-size: 13px; line-height: 1.5; }
+
+.option-note { color: var(--muted); font-size: 12px; margin: 0; font-style: italic; }
 .field input[type="number"] { width: 90px; }
 
 input[type="number"], select {
@@ -101,3 +159,11 @@ table.stats th { color: var(--muted); font-weight: 500; font-size: 12px; text-tr
 
 .note-box { background: var(--panel-2); border-left: 3px solid var(--amber); padding: 10px 14px; border-radius: 6px; color: var(--muted); font-size: 13px; margin-top: 8px; }
 .err { color: var(--red); }
+
+/* hybrid search RRF diagram */
+.rrf-diagram { display: flex; align-items: flex-start; gap: 16px; margin-top: 16px; flex-wrap: wrap; }
+.rrf-col { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; min-width: 160px; }
+.rrf-head { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 10px; }
+.rrf-item { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; padding: 3px 0; border-bottom: 1px solid var(--border); }
+.rrf-item:last-child { border-bottom: none; }
+.rrf-plus { font-size: 22px; font-weight: 300; color: var(--muted); padding-top: 36px; }

@@ -7,6 +7,8 @@ const SCENARIO_COLORS: Record<string, string> = {
   inline_384: "var(--green)",
   toast_1536: "var(--red)",
   bucket_1536: "var(--blue)",
+  hybrid_384: "var(--purple)",
+  bucket_hybrid: "var(--teal)",
 };
 
 interface TableStat {
@@ -32,7 +34,7 @@ export default function Page() {
   const [queries, setQueries] = useState(3);
   const [k, setK] = useState(10);
   const [concurrency, setConcurrency] = useState(1);
-  const [useIndex, setUseIndex] = useState(false);
+  const [searchType, setSearchType] = useState<"knn" | "ann" | "hybrid">("knn");
   const [prewarm, setPrewarm] = useState(false);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<BenchmarkResponse | null>(null);
@@ -54,10 +56,14 @@ export default function Page() {
     setRunning(true);
     setError(null);
     try {
+      const useIndex = searchType === "ann" || searchType === "hybrid";
+      const scenarios = searchType === "hybrid"
+        ? ["inline_384", "hybrid_384", "bucket_hybrid"]
+        : ["inline_384", "toast_1536", "bucket_1536"];
       const r = await fetch("/api/benchmark", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ queries, k, concurrency, useIndex, prewarm }),
+        body: JSON.stringify({ queries, k, concurrency, useIndex, prewarm: searchType !== "hybrid" && prewarm, scenarios }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? "benchmark failed");
@@ -79,37 +85,65 @@ export default function Page() {
     <div className="wrap">
       <h1>where2vector</h1>
       <p className="sub">
-        When does vector search hit disk? Compare query latency across{" "}
-        <strong>pgvector inline (no TOAST)</strong>, <strong>pgvector TOASTed</strong>, and{" "}
-        <strong>Supabase Vector Buckets</strong>.
+        {searchType === "hybrid" ? (
+          <>How does full-text search change vector query latency? Hybrid combines{" "}
+          <strong>vector search</strong> with <strong>GIN full-text search</strong>, fused by{" "}
+          <strong>Reciprocal Rank Fusion</strong>.</>
+        ) : (
+          <>When does vector search hit disk? Compare query latency across{" "}
+          <strong>pgvector inline (no TOAST)</strong>, <strong>pgvector TOASTed</strong>, and{" "}
+          <strong>Supabase Vector Buckets</strong>.</>
+        )}
       </p>
 
       <div className="panel">
         <div className="controls">
+          <div className="field field-full">
+            <label>Search type</label>
+            <div className="seg">
+              {(["knn", "ann", "hybrid"] as const).map((t) => (
+                <button
+                  key={t}
+                  className={`seg-btn${searchType === t ? " active" : ""}`}
+                  onClick={() => setSearchType(t)}
+                >
+                  {t === "knn" ? "KNN — exact" : t === "ann" ? "ANN — HNSW" : "Hybrid — vector + FTS"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="tldr field-full">
+            <SearchTypeTldr type={searchType} />
+          </div>
+
           <div className="field">
             <label>Queries</label>
             <input type="number" min={1} max={200} value={queries} onChange={(e) => setQueries(+e.target.value)} />
+            <small className="field-desc">Total queries per storage leg — more = stable percentiles</small>
           </div>
           <div className="field">
             <label>Top-K</label>
             <input type="number" min={1} max={100} value={k} onChange={(e) => setK(+e.target.value)} />
+            <small className="field-desc">Nearest neighbours to return per query (LIMIT clause)</small>
           </div>
           <div className="field">
             <label>Concurrency</label>
             <input type="number" min={1} max={32} value={concurrency} onChange={(e) => setConcurrency(+e.target.value)} />
+            <small className="field-desc">Parallel queries in flight — watch queries/sec across legs</small>
           </div>
           <div className="field">
             <label>Options</label>
-            <div className="checks">
-              <label>
-                <input type="checkbox" checked={useIndex} onChange={(e) => setUseIndex(e.target.checked)} />
-                Use HNSW index (ANN) — off = exact KNN seq scan
-              </label>
-              <label>
-                <input type="checkbox" checked={prewarm} onChange={(e) => setPrewarm(e.target.checked)} />
-                Prewarm into shared_buffers (warm baseline)
-              </label>
-            </div>
+            {searchType === "hybrid" ? (
+              <p className="option-note">Prewarm not applicable — hybrid queries via HNSW; cache warmth isn&apos;t the variable being tested here.</p>
+            ) : (
+              <div className="checks">
+                <label>
+                  <input type="checkbox" checked={prewarm} onChange={(e) => setPrewarm(e.target.checked)} />
+                  Prewarm into shared_buffers (warm baseline)
+                </label>
+              </div>
+            )}
           </div>
           <button className="run" onClick={run} disabled={running}>
             {running ? "Running…" : "Run benchmark"}
@@ -134,8 +168,10 @@ export default function Page() {
             </div>
             <p className="note-box">
               {result.queries} queries · top-{result.k} · concurrency {result.concurrency} ·{" "}
-              {result.useIndex ? "HNSW index (ANN)" : "exact KNN (sequential scan)"} ·{" "}
-              {result.prewarm ? "prewarmed" : "no prewarm"}
+              {result.results.some((r) => r.id === "hybrid_384")
+                ? "ANN + hybrid (HNSW + GIN + RRF)"
+                : result.useIndex ? "ANN — HNSW index" : "KNN — exact seq scan"}{" "}
+              {!result.results.some((r) => r.id === "hybrid_384") && `· ${result.prewarm ? "prewarmed" : "no prewarm"}`}
               {result.concurrency > 1 && (
                 <>
                   {" "}— watch <strong>queries/sec</strong> per leg below: it&apos;s how each engine handles
@@ -196,6 +232,10 @@ export default function Page() {
                 </p>
               )}
             </div>
+          )}
+
+          {result.results.some((r) => r.id === "hybrid_384" && r.available) && (
+            <HybridPanel k={result.k} inlineLeg={result.results.find((r) => r.id === "inline_384")} />
           )}
 
           {result.results.some((r) => !r.available) && (
@@ -282,7 +322,7 @@ export default function Page() {
                 doesn&apos;t report actual on-disk footprint (which also includes ANN index structures).
                 For comparison that&apos;s about the same payload as the heap+TOAST of <code>docs_1536</code>
                 {" "}(~1.2 GB) and its HNSW index (~790 MB).{" "}
-                {useIndex ? (
+                {result?.useIndex ? (
                   <>
                     With <strong>HNSW selected</strong>, the pgvector legs also do{" "}
                     <strong>approximate (ANN)</strong> search — so this is <strong>ANN vs ANN</strong>{" "}
@@ -305,6 +345,94 @@ export default function Page() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+const TLDR: Record<"knn" | "ann" | "hybrid", { running: string; lookFor: string }> = {
+  knn: {
+    running: "Full sequential scan on all 3 storage backends. Every row is fetched and its distance to the query vector computed — no index skips any work.",
+    lookFor: "The TOASTed leg (1536-dim) reads ≈ 1.2 GB from disk per query because each distance computation requires de-TOASTing the vector from a separate storage relation. The inline leg (384-dim) keeps vectors in the heap tuple — no extra fetch. That gap is pure storage cost, not query complexity.",
+  },
+  ann: {
+    running: "HNSW index walk on all 3 backends. The index stores a copy of every vector; the heap and TOAST relation are never touched during search.",
+    lookFor: "TOAST reads drop to ≈ 0 for the 1536-dim leg — the index already has the vectors. The latency gap between inline and TOASTed should nearly disappear. The remaining difference is index size: a 1536-dim HNSW index is ~5× larger than a 384-dim one, so more pages to walk.",
+  },
+  hybrid: {
+    running: "Three bars, two architectures — all using ANN (HNSW). Inline ANN is the vector-only baseline. Inline hybrid: a single Postgres query runs HNSW + GIN in parallel and fuses with RRF as a SQL CTE — the database does everything. Bucket hybrid: S3 ANN and Postgres GIN run in parallel network calls; RRF happens in application code.",
+    lookFor: "Inline ANN → Inline hybrid gap shows the GIN scan + RRF overhead when search stays inside Postgres. Inline hybrid → Bucket hybrid gap shows what the distributed pattern adds: two network round-trips instead of one SQL query, plus application-layer fusion. Same result quality, different latency profile.",
+  },
+};
+
+function SearchTypeTldr({ type }: { type: "knn" | "ann" | "hybrid" }) {
+  const { running, lookFor } = TLDR[type];
+  return (
+    <div className="tldr-box">
+      <div className="tldr-row">
+        <span className="tldr-label">Running</span>
+        <span className="tldr-text">{running}</span>
+      </div>
+      <div className="tldr-row">
+        <span className="tldr-label">Look&nbsp;for</span>
+        <span className="tldr-text">{lookFor}</span>
+      </div>
+    </div>
+  );
+}
+
+function HybridPanel({ k, inlineLeg }: { k: number; inlineLeg: ScenarioResult | undefined }) {
+  const rrfK = 60;
+  const examples = [1, 2, 3, 4].map((rank) => ({
+    rank,
+    score: (1 / (rrfK + rank)).toFixed(4),
+  }));
+
+  return (
+    <div className="panel">
+      <h2>Hybrid search — how it works</h2>
+      <p className="note-box" style={{ borderColor: "var(--purple)" }}>
+        Each query runs <strong>two indexes in parallel</strong>: an <strong>HNSW vector index</strong> (ANN,
+        L2 distance on 384-dim inline embeddings) and a <strong>GIN full-text index</strong> (
+        <code>tsvector</code> column, queried with a random vocabulary word). Results are fused with{" "}
+        <strong>Reciprocal Rank Fusion</strong>: score&nbsp;=&nbsp;1/(60+rank<sub>vec</sub>)&nbsp;+&nbsp;1/(60+rank
+        <sub>fts</sub>). A document missing from one source contributes 0 from that term; top-{k} by
+        combined score are returned.
+        {inlineLeg?.p50 != null && (
+          <>
+            {" "}The ANN-only inline baseline runs in ~{fmtMs(inlineLeg.p50)} (p50); the extra time above
+            that is the GIN scan + RRF overhead.
+          </>
+        )}
+      </p>
+      <div className="rrf-diagram">
+        <div className="rrf-col">
+          <div className="rrf-head">Vector ANN (HNSW)</div>
+          {examples.map(({ rank, score }) => (
+            <div key={rank} className="rrf-item">rank {rank} → {score}</div>
+          ))}
+          <div className="rrf-item" style={{ color: "var(--muted)" }}>…</div>
+        </div>
+        <div className="rrf-plus">+</div>
+        <div className="rrf-col">
+          <div className="rrf-head">Full-text (GIN)</div>
+          {examples.map(({ rank, score }) => (
+            <div key={rank} className="rrf-item">rank {rank} → {score}</div>
+          ))}
+          <div className="rrf-item" style={{ color: "var(--muted)" }}>…</div>
+        </div>
+        <div className="rrf-plus">→</div>
+        <div className="rrf-col">
+          <div className="rrf-head">RRF score (combined)</div>
+          {[
+            { label: "in both  rank 1+1", score: (2 / (rrfK + 1)).toFixed(4) },
+            { label: "vec rank 1, fts miss", score: (1 / (rrfK + 1)).toFixed(4) },
+            { label: "vec rank 3, fts rank 2", score: (1 / (rrfK + 3) + 1 / (rrfK + 2)).toFixed(4) },
+            { label: "fts only rank 1", score: (1 / (rrfK + 1)).toFixed(4) },
+          ].map(({ label, score }) => (
+            <div key={label} className="rrf-item">{label} → {score}</div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

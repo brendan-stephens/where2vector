@@ -16,6 +16,13 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const VOCAB = [
+  "alpha","beta","gamma","delta","epsilon","zeta","eta","theta","iota","kappa",
+  "lambda","mu","nu","xi","pi","rho","sigma","tau","fast","slow","cache","index",
+  "query","scan","heap","toast","disk","memory","vector","search","rank","score",
+  "embed","data","chunk","token","page","block","read","write","fetch","store",
+];
+
 interface Body {
   scenarios?: ScenarioId[];
   queries?: number;
@@ -52,7 +59,13 @@ export async function POST(req: NextRequest) {
   for (const meta of SCENARIOS) {
     if (!want.has(meta.id)) continue;
 
-    if (meta.dim === null) {
+    if (meta.id === "hybrid_384") {
+      const qtexts = Array.from({ length: queries }, () => VOCAB[Math.floor(Math.random() * VOCAB.length)]);
+      results.push(await runHybridLeg(supabase, meta.id, meta.label, q384, qtexts, k, concurrency));
+    } else if (meta.id === "bucket_hybrid") {
+      const qtexts = Array.from({ length: queries }, () => VOCAB[Math.floor(Math.random() * VOCAB.length)]);
+      results.push(await runBucketHybridLeg(supabase, meta.id, meta.label, q1536, qtexts, k, concurrency));
+    } else if (meta.dim === null) {
       results.push(await runBucketLeg(meta.id, meta.label, q1536, k, concurrency));
     } else {
       const qs = meta.dim === 1536 ? q1536 : q384;
@@ -145,6 +158,126 @@ async function runPgLeg(
       heapBlksRead: delta(after?.heap_blks_read, before?.heap_blks_read),
     },
   };
+}
+
+async function runHybridLeg(
+  supabase: ReturnType<typeof admin>,
+  id: ScenarioId,
+  label: string,
+  queryVectors: number[][],
+  queryTexts: string[],
+  k: number,
+  concurrency: number
+): Promise<ScenarioResult> {
+  // Check that the FTS column exists (migration 0010 applied) by probing the RPC.
+  // If it fails with "function does not exist" we surface a clear message.
+  let failErr: string | null = null;
+  const wall0 = performance.now();
+  const samples = await runPool(queryVectors, concurrency, async (v, i) => {
+    const qvec = vectorLiteral(v);
+    const query_text = queryTexts[i];
+    const t0 = performance.now();
+    const { error } = await supabase.rpc("bench_hybrid_knn", { qvec, query_text, k });
+    const dt = performance.now() - t0;
+    if (error) failErr = failErr ?? error.message;
+    return dt;
+  });
+  const wallMs = performance.now() - wall0;
+  if (failErr) {
+    const msg = String(failErr);
+    const note = msg.includes("does not exist")
+      ? "Run migration 0010_hybrid.sql to enable hybrid search (adds tsvector column + bench_hybrid_knn RPC)."
+      : msg;
+    return failLeg(id, label, note);
+  }
+  return {
+    id,
+    label,
+    available: true,
+    samples,
+    ...summarize(samples),
+    wallMs,
+    throughput: throughputOf(samples.length, wallMs),
+  };
+}
+
+// Bucket hybrid: fan out to S3 ANN + Postgres GIN in parallel, fuse with RRF in TypeScript.
+// This is the "distributed hybrid" pattern — the vector store and the text store are separate
+// systems; the application layer does the fusion. Compare to bench_hybrid_knn which does
+// everything inside a single Postgres query.
+async function runBucketHybridLeg(
+  supabase: ReturnType<typeof admin>,
+  id: ScenarioId,
+  label: string,
+  queryVectors: number[][],
+  queryTexts: string[],
+  k: number,
+  concurrency: number
+): Promise<ScenarioResult> {
+  const bc = bucketClient();
+  if (!bc) {
+    return failLeg(id, label, "Vector Buckets need the service-role key. Add SUPABASE_SERVICE_ROLE_KEY to .env.local.");
+  }
+  const probe = await probeBucket(bc);
+  if (!probe.available) {
+    return failLeg(id, label, probe.note ?? "Vector Bucket unavailable");
+  }
+
+  const RRF_K = 60;
+  let failErr: string | null = null;
+  const wall0 = performance.now();
+  const samples = await runPool(queryVectors, concurrency, async (v, i) => {
+    const query_text = queryTexts[i];
+    const t0 = performance.now();
+    try {
+      // Fan out: S3 ANN + Postgres GIN in parallel
+      const [bucketResults, ftsResult] = await Promise.all([
+        queryBucket(bc, v, k * 10),
+        supabase.rpc("bench_fts_1536", { query_text, k: k * 10 }),
+      ]);
+
+      if (ftsResult.error) {
+        const msg = ftsResult.error.message;
+        throw new Error(
+          msg.includes("does not exist")
+            ? "Run migration 0011_hybrid_bucket.sql to enable bucket hybrid (adds fts column + bench_fts_1536 RPC)."
+            : msg
+        );
+      }
+
+      // Build rank maps from each leg
+      const vecRanks = new Map<number, number>();
+      bucketResults.forEach((r, idx) => {
+        const docId = parseInt(r.key.replace("doc-", ""), 10);
+        if (!isNaN(docId)) vecRanks.set(docId, idx + 1);
+      });
+
+      const ftsRanks = new Map<number, number>();
+      ((ftsResult.data ?? []) as Array<{ id: number; rn: number }>).forEach((r) => {
+        ftsRanks.set(Number(r.id), Number(r.rn));
+      });
+
+      // RRF fusion
+      const allIds = new Set([...vecRanks.keys(), ...ftsRanks.keys()]);
+      const scored = [...allIds]
+        .map((docId) => ({
+          docId,
+          score:
+            (vecRanks.has(docId) ? 1 / (RRF_K + vecRanks.get(docId)!) : 0) +
+            (ftsRanks.has(docId) ? 1 / (RRF_K + ftsRanks.get(docId)!) : 0),
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, k);
+
+      void scored; // latency benchmark — result ids are discarded
+    } catch (e: any) {
+      failErr = failErr ?? (e?.message ?? String(e));
+    }
+    return performance.now() - t0;
+  });
+  const wallMs = performance.now() - wall0;
+  if (failErr) return failLeg(id, label, String(failErr));
+  return { id, label, available: true, samples, ...summarize(samples), wallMs, throughput: throughputOf(samples.length, wallMs) };
 }
 
 async function runBucketLeg(

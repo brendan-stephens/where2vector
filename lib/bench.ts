@@ -1,6 +1,6 @@
 // Shared benchmark types + helpers (used by both the API route and the seed script).
 
-export type ScenarioId = "inline_384" | "toast_1536" | "bucket_1536";
+export type ScenarioId = "inline_384" | "toast_1536" | "bucket_1536" | "hybrid_384" | "bucket_hybrid";
 
 export interface ScenarioMeta {
   id: ScenarioId;
@@ -27,6 +27,18 @@ export const SCENARIOS: ScenarioMeta[] = [
     id: "bucket_1536",
     label: "Vector Bucket (S3)",
     blurb: "1536-dim vectors in Supabase's S3-backed store — object-storage latency, scales to millions.",
+    dim: null,
+  },
+  {
+    id: "hybrid_384",
+    label: "Inline — hybrid (vector + FTS + RRF)",
+    blurb: "Vector KNN on inline 384-dim embeddings fused with GIN full-text search via Reciprocal Rank Fusion.",
+    dim: 384,
+  },
+  {
+    id: "bucket_hybrid",
+    label: "Bucket — hybrid (S3 ANN + FTS + RRF)",
+    blurb: "S3 ANN query and Postgres GIN search run in parallel; results fused by RRF in the application layer.",
     dim: null,
   },
 ];
