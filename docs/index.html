@@ -480,7 +480,7 @@ section + section { border-top: 1px solid var(--border); }
 /* ── architecture ── */
 .arch-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
   gap: 16px;
   margin-top: 32px;
 }
@@ -488,10 +488,19 @@ section + section { border-top: 1px solid var(--border); }
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 20px;
+  padding: 20px 24px;
 }
-.arch-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--green); }
-.arch-card p { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.arch-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--green); }
+.arch-items { display: flex; flex-direction: column; gap: 6px; }
+.arch-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.arch-item code { white-space: nowrap; }
+.arch-item span { color: var(--muted); }
 code { font-size: .9em; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, "Cascadia Code", monospace; color: var(--text); }
 
 /* ── footer ── */
@@ -778,33 +787,45 @@ footer a { color: var(--green); }
     <div class="arch-grid">
       <div class="arch-card reveal">
         <h4>Migrations</h4>
-        <p>
-          <code>0001</code> extensions ·
-          <code>0002</code> tables ·
-          <code>0003</code> RPCs ·
-          <code>0004</code> seed helpers ·
-          <code>0005</code> statio ·
-          <code>0006</code> demo access ·
-          <code>0010</code> hybrid FTS ·
-          <code>0011</code> bucket hybrid
-        </p>
+        <div class="arch-items">
+          <div class="arch-item"><code>0001</code><span>extensions (pgvector, pg_prewarm)</span></div>
+          <div class="arch-item"><code>0002</code><span>tables — bench.docs_384, bench.docs_1536</span></div>
+          <div class="arch-item"><code>0003</code><span>query RPCs — bench_knn, bench_explain_knn, bench_prewarm</span></div>
+          <div class="arch-item"><code>0004</code><span>seed helpers — bench_seed, bench_fetch_batch</span></div>
+          <div class="arch-item"><code>0005</code><span>statio — bench_statio, bench_toast_stats</span></div>
+          <div class="arch-item"><code>0006</code><span>demo access — anon grants, raised statement_timeout</span></div>
+          <div class="arch-item"><code>0010</code><span>hybrid FTS — tsvector column, GIN index, bench_hybrid_knn</span></div>
+          <div class="arch-item"><code>0011</code><span>bucket hybrid — fts on docs_1536, bench_fts_1536</span></div>
+        </div>
       </div>
       <div class="arch-card reveal">
         <h4>Key RPCs</h4>
-        <p>
-          <code>bench_knn</code> exact / HNSW ·
-          <code>bench_hybrid_knn</code> HNSW + GIN + RRF CTE ·
-          <code>bench_fts_1536</code> GIN leg for bucket hybrid ·
-          <code>bench_explain_knn</code> buffer attribution
-        </p>
+        <div class="arch-items">
+          <div class="arch-item"><code>bench_knn</code><span>exact sequential scan or HNSW index scan</span></div>
+          <div class="arch-item"><code>bench_hybrid_knn</code><span>HNSW + GIN fused with RRF in a single SQL CTE</span></div>
+          <div class="arch-item"><code>bench_fts_1536</code><span>GIN full-text leg for the bucket hybrid</span></div>
+          <div class="arch-item"><code>bench_explain_knn</code><span>EXPLAIN ANALYZE — buffer and I/O attribution</span></div>
+          <div class="arch-item"><code>bench_statio</code><span>pg_statio snapshot — TOAST pages read per query</span></div>
+          <div class="arch-item"><code>bench_prewarm</code><span>pull table + TOAST into shared_buffers</span></div>
+        </div>
       </div>
       <div class="arch-card reveal">
         <h4>Bucket hybrid</h4>
-        <p>S3 ANN (<code>queryBucket</code>) + Postgres GIN (<code>bench_fts_1536</code>) fire in parallel via <code>Promise.all</code>. RRF fusion runs in TypeScript — the "distributed hybrid" pattern.</p>
+        <div class="arch-items">
+          <div class="arch-item"><code>queryBucket</code><span>S3 ANN search — top k×10 vector candidates</span></div>
+          <div class="arch-item"><code>bench_fts_1536</code><span>Postgres GIN search — top k×10 keyword candidates</span></div>
+          <div class="arch-item"><code>Promise.all</code><span>both legs fire in parallel — true fan-out</span></div>
+          <div class="arch-item"><code>RRF (TS)</code><span>fusion runs in TypeScript, not inside Postgres</span></div>
+        </div>
       </div>
       <div class="arch-card reveal">
         <h4>Seeding</h4>
-        <p><code>bench_seed(dim, n)</code> inserts rows server-side with random vectors and vocabulary payloads so FTS finds real matches. Both tables: 150k rows. Bucket: 150k mirrored vectors.</p>
+        <div class="arch-items">
+          <div class="arch-item"><code>bench_seed</code><span>server-side insert — random vectors + vocab payloads</span></div>
+          <div class="arch-item"><code>docs_384</code><span>150k rows · 384-dim · inline heap storage</span></div>
+          <div class="arch-item"><code>docs_1536</code><span>150k rows · 1536-dim · TOAST + GIN index</span></div>
+          <div class="arch-item"><code>bucket</code><span>150k mirrored vectors · euclidean · same ids</span></div>
+        </div>
       </div>
     </div>
   </div>
