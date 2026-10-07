@@ -256,6 +256,49 @@ section + section { border-top: 1px solid var(--border); }
 .mode-panel.active { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: start; }
 @media (max-width: 700px) { .mode-panel.active { grid-template-columns: 1fr; } }
 
+/* code snippet block — spans full width below the two-column layout */
+.snippet-wrap {
+  grid-column: 1 / -1;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.snippet-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.snippet-tab {
+  padding: 10px 18px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  border-bottom: 2px solid transparent;
+  transition: color .15s, border-color .15s;
+}
+.snippet-tab.active { color: var(--text); border-bottom-color: var(--green); }
+.snippet-tab:not(.active):hover { color: var(--text); }
+.snippet-body { display: none; }
+.snippet-body.active { display: block; }
+.snippet-body pre {
+  margin: 0;
+  padding: 20px 24px;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre;
+}
+.kw  { color: var(--purple); }
+.fn  { color: var(--blue); }
+.str { color: var(--green); }
+.cm  { color: var(--muted); font-style: italic; }
+
 .mode-explain h3 { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
 .mode-explain p { color: var(--muted); font-size: 14px; line-height: 1.65; margin-bottom: 12px; }
 .mode-explain .step {
@@ -754,6 +797,70 @@ footer a { color: var(--green); }
           </div>
         </div>
       </div>
+
+      <!-- full-width code snippets -->
+      <div class="snippet-wrap">
+        <div class="snippet-tabs">
+          <button class="snippet-tab active" onclick="switchSnippet('sql',this)">Inline hybrid — Postgres CTE</button>
+          <button class="snippet-tab" onclick="switchSnippet('ts',this)">Bucket hybrid — TypeScript</button>
+        </div>
+        <div class="snippet-body active" id="snip-sql">
+          <pre><span class="cm">-- bench_hybrid_knn: HNSW + GIN fused with RRF in one round-trip</span>
+<span class="kw">with</span>
+vec_ranked <span class="kw">as</span> (
+  <span class="kw">select</span> id, <span class="fn">row_number</span>() <span class="kw">over</span> (<span class="kw">order by</span> embedding <span class="kw">&lt;-&gt;</span> qvec) <span class="kw">as</span> rn
+  <span class="kw">from</span> bench.docs_384
+  <span class="kw">order by</span> embedding <span class="kw">&lt;-&gt;</span> qvec          <span class="cm">-- HNSW index scan (ANN)</span>
+  <span class="kw">limit</span> k * <span class="str">10</span>
+),
+fts_ranked <span class="kw">as</span> (
+  <span class="kw">select</span> id, <span class="fn">row_number</span>() <span class="kw">over</span> (<span class="kw">order by</span> <span class="fn">ts_rank</span>(fts, query) <span class="kw">desc</span>) <span class="kw">as</span> rn
+  <span class="kw">from</span> bench.docs_384
+  <span class="kw">where</span> fts <span class="kw">@@</span> <span class="fn">websearch_to_tsquery</span>(<span class="str">'english'</span>, query_text)  <span class="cm">-- GIN index scan</span>
+  <span class="kw">order by</span> <span class="fn">ts_rank</span>(fts, query) <span class="kw">desc</span>
+  <span class="kw">limit</span> k * <span class="str">10</span>
+),
+rrf <span class="kw">as</span> (
+  <span class="kw">select</span>
+    <span class="fn">coalesce</span>(v.id, f.id) <span class="kw">as</span> id,
+    <span class="fn">coalesce</span>(<span class="str">1.0</span> / (rrf_k + v.rn), <span class="str">0.0</span>)   <span class="cm">-- vector rank contribution</span>
+    + <span class="fn">coalesce</span>(<span class="str">1.0</span> / (rrf_k + f.rn), <span class="str">0.0</span>) <span class="cm">-- fts rank contribution</span>
+    <span class="kw">as</span> score
+  <span class="kw">from</span> vec_ranked v
+  <span class="kw">full outer join</span> fts_ranked f <span class="kw">on</span> v.id = f.id
+)
+<span class="kw">select</span> id <span class="kw">from</span> rrf <span class="kw">order by</span> score <span class="kw">desc limit</span> k;</pre>
+        </div>
+        <div class="snippet-body" id="snip-ts">
+          <pre><span class="cm">// Bucket hybrid: S3 ANN + Postgres GIN fire in parallel, RRF in TypeScript</span>
+
+<span class="cm">// Fan out — both legs start at the same time</span>
+<span class="kw">const</span> [bucketResults, ftsResult] = <span class="kw">await</span> <span class="fn">Promise.all</span>([
+  <span class="fn">queryBucket</span>(bc, queryVector, k * <span class="str">10</span>),                          <span class="cm">// S3 ANN</span>
+  supabase.<span class="fn">rpc</span>(<span class="str">'bench_fts_1536'</span>, { query_text, k: k * <span class="str">10</span> }),   <span class="cm">// Postgres GIN</span>
+]);
+
+<span class="cm">// Build rank maps from each leg</span>
+<span class="kw">const</span> vecRanks = <span class="kw">new</span> <span class="fn">Map</span>(
+  bucketResults.<span class="fn">map</span>((r, i) => [<span class="fn">parseInt</span>(r.key.<span class="fn">replace</span>(<span class="str">'doc-'</span>, <span class="str">''</span>)), i + <span class="str">1</span>])
+);
+<span class="kw">const</span> ftsRanks = <span class="kw">new</span> <span class="fn">Map</span>(
+  ftsResult.data.<span class="fn">map</span>((r) => [r.id, r.rn])
+);
+
+<span class="cm">// RRF fusion in TypeScript</span>
+<span class="kw">const</span> allIds = <span class="kw">new</span> <span class="fn">Set</span>([...vecRanks.<span class="fn">keys</span>(), ...ftsRanks.<span class="fn">keys</span>()]);
+<span class="kw">const</span> results = [...allIds]
+  .<span class="fn">map</span>((id) => ({
+    id,
+    score:
+      (vecRanks.<span class="fn">has</span>(id) ? <span class="str">1</span> / (<span class="str">60</span> + vecRanks.<span class="fn">get</span>(id)) : <span class="str">0</span>) +
+      (ftsRanks.<span class="fn">has</span>(id) ? <span class="str">1</span> / (<span class="str">60</span> + ftsRanks.<span class="fn">get</span>(id)) : <span class="str">0</span>),
+  }))
+  .<span class="fn">sort</span>((a, b) => b.score - a.score)
+  .<span class="fn">slice</span>(<span class="str">0</span>, k);</pre>
+        </div>
+      </div>
     </div>
   </div>
 </section>
@@ -860,6 +967,14 @@ function animateToast() {
   next();
 }
 animateToast();
+
+// ── snippet tabs ───────────────────────────────────────────────
+function switchSnippet(id, btn) {
+  btn.closest('.snippet-wrap').querySelectorAll('.snippet-tab').forEach(t => t.classList.remove('active'));
+  btn.closest('.snippet-wrap').querySelectorAll('.snippet-body').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('snip-' + id).classList.add('active');
+}
 
 // ── mode switching ─────────────────────────────────────────────
 function switchMode(id, btn) {
